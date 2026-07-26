@@ -1,0 +1,193 @@
+name: Nightly Python build (pilot)
+
+# Pilot nightly build:
+# - Builds CPython main HEAD on ubuntu-24.04 / x64 only.
+# - Runs daily via cron; can also be triggered manually.
+# - Steps use strict modes (set -euo pipefail, $ErrorActionPreference=Stop).
+#   Matrix does NOT fail-fast: other cells keep running, but if any cell
+#   fails the overall `build` job fails and the downstream manifest update
+#   is skipped (no publish that day).
+# - Distribution model: NO GitHub Releases. The built tarball is uploaded
+#   as a workflow artifact (retention-days: 14). The artifact URL is
+#   recorded in nightly-manifest.json as the download URL.
+#     * The URL requires the caller to be authenticated with repo read
+#       access (browser URL) or to supply a GITHUB_TOKEN (REST API URL).
+#     * The artifact is served as a .zip that wraps the .tar.gz.
+#     * Manifest entries older than 14 days will point at expired artifacts;
+#       the manifest itself is append-only and is never pruned.
+
+on:
+  schedule:
+    # 05:30 UTC every day. Adjust as needed.
+    - cron: '30 5 * * *'
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'CPython git ref to build (branch, tag, or SHA)'
+        default: 'main'
+        required: true
+
+# Prevent overlapping nightlies from stepping on each other's manifest commits.
+concurrency:
+  group: nightly-python-build
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: pwsh
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build nightly Python
+    strategy:
+      # Don't cancel sibling matrix cells if one fails. When any cell fails,
+      # the overall job status still becomes failure, which prevents the
+      # downstream `update-manifest` job from running that day.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-24.04
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    outputs:
+      python_version:  ${{ steps.build.outputs.python_version }}
+      nightly_version: ${{ steps.build.outputs.nightly_version }}
+      commit_sha:      ${{ steps.build.outputs.commit_sha }}
+      commit_date:     ${{ steps.build.outputs.commit_date }}
+      artifact_name:   ${{ steps.build.outputs.artifact_name }}
+      platform:        ${{ steps.build.outputs.platform }}
+      arch:            ${{ steps.build.outputs.arch }}
+      artifact_id:     ${{ steps.upload.outputs.artifact-id }}
+      artifact_url:    ${{ steps.upload.outputs.artifact-url }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libssl-dev zlib1g-dev libbz2-dev libsqlite3-dev \
+            libncursesw5-dev libreadline-dev libgdbm-dev \
+            libgdbm-compat-dev liblzma-dev libffi-dev uuid-dev \
+            tk-dev
+
+      - name: Build nightly Python
+        id: build
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          ./builders/build-nightly-python.ps1 `
+            -SourceRef "${{ inputs.source_ref || 'main' }}" `
+            -Platform  "${{ matrix.platform }}" `
+            -Arch      "${{ matrix.arch }}"
+
+      - name: Upload artifact
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/artifact
+          if-no-files-found: error
+          retention-days: 14
+
+  update-manifest:
+    name: Update nightly manifest
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Update nightly-manifest.json
+        shell: pwsh
+        env:
+          PYTHON_VERSION:  ${{ needs.build.outputs.python_version }}
+          NIGHTLY_VERSION: ${{ needs.build.outputs.nightly_version }}
+          COMMIT_SHA:      ${{ needs.build.outputs.commit_sha }}
+          COMMIT_DATE:     ${{ needs.build.outputs.commit_date }}
+          ARTIFACT_NAME:   ${{ needs.build.outputs.artifact_name }}
+          ARTIFACT_ID:     ${{ needs.build.outputs.artifact_id }}
+          ARTIFACT_URL:    ${{ needs.build.outputs.artifact_url }}
+          MATRIX_PLATFORM: ${{ needs.build.outputs.platform }}
+          MATRIX_ARCH:     ${{ needs.build.outputs.arch }}
+          RUN_ID:          ${{ github.run_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $manifestPath = "nightly-manifest.json"
+          if (-not (Test-Path $manifestPath)) { '[]' | Set-Content $manifestPath }
+
+          $raw = Get-Content $manifestPath -Raw
+          $manifest = if ([string]::IsNullOrWhiteSpace($raw)) { @() } else { @($raw | ConvertFrom-Json) }
+
+          # If we already have an entry for this exact commit, do nothing.
+          # The manifest is append-only; existing entries are never removed
+          # or rewritten by this workflow.
+          if ($manifest | Where-Object { $_.commit_sha -eq $env:COMMIT_SHA }) {
+            Write-Host "::notice::Manifest already has an entry for commit $env:COMMIT_SHA; skipping."
+            exit 0
+          }
+
+          # platform="linux-24.04" -> platform_name="linux", platform_version="24.04"
+          $parts = $env:MATRIX_PLATFORM.Split('-', 2)
+          $platformName    = $parts[0]
+          $platformVersion = if ($parts.Length -gt 1) { $parts[1] } else { "" }
+
+          $repo = $env:GITHUB_REPOSITORY
+
+          # `download_url` (browser): requires the caller to be signed in with
+          #     repo read access. This is what `actions/upload-artifact`
+          #     exposes as `artifact-url`.
+          # `api_download_url` (REST): scripted consumers can `curl -L -H
+          #     "Authorization: Bearer $GITHUB_TOKEN"` this to get the .zip.
+          $apiDownloadUrl = "https://api.github.com/repos/$repo/actions/artifacts/$($env:ARTIFACT_ID)/zip"
+
+          $files = @([ordered]@{
+            filename         = "$($env:ARTIFACT_NAME).tar.gz"
+            arch             = $env:MATRIX_ARCH
+            platform         = $platformName
+            platform_version = $platformVersion
+            download_url     = $env:ARTIFACT_URL
+            api_download_url = $apiDownloadUrl
+            artifact_id      = $env:ARTIFACT_ID
+            artifact_format  = "zip"   # the artifact is a .zip wrapping the .tar.gz
+          })
+
+          $entry = [ordered]@{
+            python_version  = $env:PYTHON_VERSION
+            nightly_version = $env:NIGHTLY_VERSION
+            commit_sha      = $env:COMMIT_SHA
+            commit_date     = $env:COMMIT_DATE
+            run_id          = $env:RUN_ID
+            run_url         = "https://github.com/$repo/actions/runs/$($env:RUN_ID)"
+            stable          = $false
+            files           = @($files)
+          }
+
+          # Prepend the new entry. Append-only: never remove existing ones.
+          $updated = @($entry) + $manifest
+          $updated | ConvertTo-Json -Depth 6 | Set-Content -Path $manifestPath
+
+      - name: Commit manifest update
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- nightly-manifest.json; then
+            echo "No manifest changes to commit."
+            exit 0
+          fi
+          git config user.name  "nightly-bot"
+          git config user.email "nightly-bot@example.invalid"
+          git add nightly-manifest.json
+          git commit -m "chore(nightly): add ${{ needs.build.outputs.nightly_version }}"
+          git push origin HEAD:${{ github.ref_name }}

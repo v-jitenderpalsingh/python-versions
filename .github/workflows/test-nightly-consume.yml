@@ -1,0 +1,129 @@
+name: Test nightly consumption (pilot)
+
+# Smoke test for the nightly pipeline while artifacts stay private (no
+# release publishing). Runs in the same repo, so `secrets.GITHUB_TOKEN`
+# already has permission to download the nightly workflow artifact —
+# no PAT needed.
+#
+# What it does:
+#   1. Reads the latest entry from nightly-manifest.json.
+#   2. Downloads the referenced workflow artifact via `actions/download-artifact`
+#      (which handles auth + unzips the outer .zip automatically).
+#   3. Extracts the inner .tar.gz and runs installers/setup.sh, which
+#      installs the nightly into $RUNNER_TOOL_CACHE/Python/<ver>/<arch>.
+#   4. Sanity-checks the install directly.
+#   5. Best-effort: tries actions/setup-python against the same version
+#      to see whether it discovers the pre-populated toolcache entry.
+
+on:
+  workflow_dispatch:
+  # Also auto-run after a successful nightly build on main.
+  workflow_run:
+    workflows: ["Nightly Python build (pilot)"]
+    types: [completed]
+
+jobs:
+  smoke-test:
+    name: Consume latest nightly on ubuntu-24.04 / x64
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read   # required by download-artifact for cross-run access
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Read latest nightly manifest entry
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s nightly-manifest.json ]; then
+            echo "::error::nightly-manifest.json missing or empty."
+            exit 1
+          fi
+
+          entry=$(jq '.[0]' nightly-manifest.json)
+          if [ "$entry" = "null" ]; then
+            echo "::error::No entries in nightly-manifest.json yet; run the nightly build first."
+            exit 1
+          fi
+
+          python_version=$(jq -r '.python_version'      <<<"$entry")
+          nightly_version=$(jq -r '.nightly_version'    <<<"$entry")
+          run_id=$(jq -r '.run_id'                       <<<"$entry")
+          tarball=$(jq -r '.files[0].filename'           <<<"$entry")
+          arch=$(jq -r '.files[0].arch'                  <<<"$entry")
+          # The artifact name is the tarball filename minus the .tar.gz suffix
+          # (this matches how build-nightly-python.ps1 names both).
+          artifact_name="${tarball%.tar.gz}"
+
+          {
+            echo "python_version=$python_version"
+            echo "nightly_version=$nightly_version"
+            echo "run_id=$run_id"
+            echo "tarball=$tarball"
+            echo "arch=$arch"
+            echo "artifact_name=$artifact_name"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Latest nightly:"
+          echo "  python_version:  $python_version"
+          echo "  nightly_version: $nightly_version"
+          echo "  run_id:          $run_id"
+          echo "  artifact:        $artifact_name"
+
+      - name: Download nightly workflow artifact
+        # actions/download-artifact handles both auth (via github-token) and
+        # the outer .zip unwrap for us. Result on disk is the raw .tar.gz.
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ steps.manifest.outputs.artifact_name }}
+          run-id: ${{ steps.manifest.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ./nightly-download
+
+      - name: Extract tarball and install into toolcache
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd ./nightly-download
+          ls -la
+          tar -xzf "${{ steps.manifest.outputs.tarball }}"
+          # installers/nix-setup-template.sh rendered into the tarball;
+          # installs into $RUNNER_TOOL_CACHE/Python/<version>/<arch>.
+          sh ./setup.sh
+
+      - name: Verify installed nightly Python (direct invocation)
+        shell: bash
+        run: |
+          set -euo pipefail
+          PY_ROOT="$RUNNER_TOOL_CACHE/Python/${{ steps.manifest.outputs.python_version }}/${{ steps.manifest.outputs.arch }}"
+          echo "Toolcache path: $PY_ROOT"
+          ls -la "$PY_ROOT"
+          "$PY_ROOT/python" -VVV
+          "$PY_ROOT/python" -c "import ssl, sqlite3, zlib, ctypes, hashlib, lzma, bz2; print('stdlib imports OK')"
+
+      - name: Try consuming via actions/setup-python (best effort)
+        # setup-python may or may not accept the raw PEP 440-style version
+        # string from patchlevel.h (e.g. '3.16.0a0'). Non-fatal: the direct
+        # invocation step above already proved the artifact works.
+        continue-on-error: true
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ steps.manifest.outputs.python_version }}
+          architecture: ${{ steps.manifest.outputs.arch }}
+
+      - name: setup-python outcome
+        shell: bash
+        run: |
+          if command -v python >/dev/null 2>&1; then
+            echo "setup-python resolved to: $(command -v python)"
+            python -VVV
+          else
+            echo "::notice::setup-python did not resolve the nightly version; direct-invocation path is the supported flow for now."
+          fi
+
+          python --version
+          echo "Nightly consumption test complete."
