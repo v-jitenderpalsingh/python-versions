@@ -176,7 +176,7 @@ jobs:
 
           # Prepend the new entry. Append-only: never remove existing ones.
           $updated = @($entry) + $manifest
-          $updated | ConvertTo-Json -Depth 6 | Set-Content -Path $manifestPath
+          $updated | ConvertTo-Json -Depth 6 -AsArray | Set-Content -Path $manifestPath
 
       - name: Commit manifest update
         shell: bash
