@@ -107,7 +107,11 @@ Write-Host "==> Artifact       : $outputTarball"
 # --- Configure & build ------------------------------------------------------
 # Enable-shared + rpath so the runtime can find libpython at the install prefix.
 # We deliberately skip --enable-optimizations to keep pilot runs fast.
-$env:LDFLAGS = "-Wl,--rpath=$InstallDir/lib"
+
+# Use $ORIGIN (a special ld.so token) so the runtime library search is
+# relative to the binary's location, not the build-time install prefix.
+# This lets the tarball be extracted anywhere and still work.
+$env:LDFLAGS = '-Wl,-rpath,$ORIGIN/../lib'
 
 Push-Location $SrcDir
 try {
