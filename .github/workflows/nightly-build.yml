@@ -26,6 +26,12 @@ on:
         description: 'CPython git ref to build (branch, tag, or SHA)'
         default: 'main'
         required: true
+  push:
+    branches:
+      - main
+      - test-nightly
+    paths-ignore:
+      - 'nightly-manifest.json'
 
 # Prevent overlapping nightlies from stepping on each other's manifest commits.
 concurrency:
