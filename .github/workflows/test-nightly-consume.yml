@@ -21,9 +21,6 @@ on:
   workflow_run:
     workflows: ["Nightly Python build (pilot)"]
     types: [completed]
-  push:
-    branches: [main, test-nightly]
-    paths: ["nightly-manifest.json"]
 
 jobs:
   smoke-test:

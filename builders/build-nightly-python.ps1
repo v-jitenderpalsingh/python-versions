@@ -105,28 +105,19 @@ Write-Host "==> Commit         : $CommitSha ($CommitDate)"
 Write-Host "==> Artifact       : $outputTarball"
 
 # --- Configure & build ------------------------------------------------------
-# Enable-shared + rpath so the runtime can find libpython at the install prefix.
-# We deliberately skip --enable-optimizations to keep pilot runs fast.
+# The path where consumers extract the tarball. Matches production.
+$toolcacheDir = "/opt/hostedtoolcache/Python/$pythonVersion/$Arch"
 
-# Use $ORIGIN (a special ld.so token) so the runtime library search is
-# relative to the binary's location, not the build-time install prefix.
-# This lets the tarball be extracted anywhere and still work.
-$env:LDFLAGS = '-Wl,-rpath,$ORIGIN/../lib'
+$env:LDFLAGS = "-Wl,--rpath=${toolcacheDir}/lib"
 
 Push-Location $SrcDir
 try {
-    Write-Host "==> configure"
     & ./configure `
-        --prefix=$InstallDir `
+        --prefix=$toolcacheDir `
         --enable-shared `
         --with-lto `
         --enable-loadable-sqlite-extensions
-
-    $jobs = (& nproc).Trim()
-    Write-Host "==> make -j$jobs"
-    & make -j $jobs
-
-    Write-Host "==> make install"
+    & make -j (& nproc).Trim()
     & make install
 } finally {
     Pop-Location
@@ -138,7 +129,7 @@ if (Test-Path $stageDir) { Remove-Item -Recurse -Force $stageDir }
 New-Item -Force -ItemType Directory -Path $stageDir | Out-Null
 
 Write-Host "==> Staging install tree"
-Copy-Item -Recurse -Force -Path (Join-Path $InstallDir "*") -Destination $stageDir
+Copy-Item -Recurse -Force -Path (Join-Path $toolcacheDir "*") -Destination $stageDir
 
 # Render the installer template. The runtime setup script only cares about
 # MAJOR.MINOR from PYTHON_FULL_VERSION (it uses `cut -d.`), so passing the
