@@ -19,7 +19,7 @@ name: Nightly Python build (pilot)
 on:
   schedule:
     # 05:30 UTC every day. Adjust as needed.
-    - cron: '30 5 * * *'
+    - cron: '20 22 * * *'
   workflow_dispatch:
     inputs:
       source_ref:
@@ -54,13 +54,13 @@ jobs:
             arch: x64
     runs-on: ${{ matrix.os }}
     outputs:
-      python_version:  ${{ steps.build.outputs.python_version }}
-      nightly_version: ${{ steps.build.outputs.nightly_version }}
-      commit_sha:      ${{ steps.build.outputs.commit_sha }}
-      commit_date:     ${{ steps.build.outputs.commit_date }}
-      artifact_name:   ${{ steps.build.outputs.artifact_name }}
-      platform:        ${{ steps.build.outputs.platform }}
-      arch:            ${{ steps.build.outputs.arch }}
+      python_version:  ${{ steps.meta.outputs.python_version }}
+      nightly_version: ${{ steps.meta.outputs.nightly_version }}
+      commit_sha:      ${{ steps.meta.outputs.commit_sha }}
+      commit_date:     ${{ steps.meta.outputs.commit_date }}
+      artifact_name:   ${{ steps.meta.outputs.artifact_name }}
+      platform:        ${{ matrix.platform }}
+      arch:            ${{ matrix.arch }}
       artifact_id:     ${{ steps.upload.outputs.artifact-id }}
       artifact_url:    ${{ steps.upload.outputs.artifact-url }}
     steps:
@@ -79,21 +79,105 @@ jobs:
             libgdbm-compat-dev liblzma-dev libffi-dev uuid-dev \
             tk-dev
 
-      - name: Build nightly Python
-        id: build
+      - name: Clone CPython and compute nightly metadata
+        # Handles everything nightly-specific up front:
+        # - Blobless clone of the requested ref (fast, but tags available)
+        # - Parse Include/patchlevel.h -> semver + PEP 440 Python versions
+        # - Compute commit sha (10 chars) + compact YYYYMMDD commit date
+        # - Compose Node.js-style nightly version:
+        #     <pep440>-nightly<YYYYMMDD><shortSHA>
+        #   e.g. 3.16.0a0-nightly202607281234567890
+        # - Emit outputs consumed by the build + manifest jobs
+        id: meta
+        env:
+          SOURCE_REF:      ${{ inputs.source_ref || 'main' }}
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+          MATRIX_ARCH:     ${{ matrix.arch }}
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          ./builders/build-nightly-python.ps1 `
-            -SourceRef "${{ inputs.source_ref || 'main' }}" `
-            -Platform  "${{ matrix.platform }}" `
-            -Arch      "${{ matrix.arch }}"
+
+          $srcDir = Join-Path $env:RUNNER_TEMP "cpython"
+          if (Test-Path $srcDir) { Remove-Item -Recurse -Force $srcDir }
+
+          git clone --filter=blob:none --branch $env:SOURCE_REF `
+              https://github.com/python/cpython.git $srcDir
+
+          Push-Location $srcDir
+          try {
+              $shortSha   = (git rev-parse --short=10 HEAD).Trim()
+              $commitDate = (git show -s --format=%cs HEAD).Trim()   # YYYY-MM-DD
+          } finally {
+              Pop-Location
+          }
+          $commitDateCompact = $commitDate -replace '-', ''          # YYYYMMDD
+
+          # Parse patchlevel.h -> two forms of the base Python version:
+          # - semver  ("3.16.0-alpha.0") feeds build-python.ps1's [semver] param
+          #   and Convert-Label (alpha|beta|rc).
+          # - PEP 440 ("3.16.0a0") is what Python itself reports; used inside
+          #   the Node.js-style nightly identifier.
+          $patchLevel = Get-Content (Join-Path $srcDir "Include/patchlevel.h") -Raw
+          $major  = [regex]::Match($patchLevel, '#define\s+PY_MAJOR_VERSION\s+(\d+)').Groups[1].Value
+          $minor  = [regex]::Match($patchLevel, '#define\s+PY_MINOR_VERSION\s+(\d+)').Groups[1].Value
+          $micro  = [regex]::Match($patchLevel, '#define\s+PY_MICRO_VERSION\s+(\d+)').Groups[1].Value
+          $level  = [regex]::Match($patchLevel, '#define\s+PY_RELEASE_LEVEL\s+PY_RELEASE_LEVEL_(\w+)').Groups[1].Value
+          $serial = [regex]::Match($patchLevel, '#define\s+PY_RELEASE_SERIAL\s+(\d+)').Groups[1].Value
+
+          $semverLabelMap  = @{ ALPHA = 'alpha'; BETA = 'beta'; GAMMA = 'rc'; FINAL = '' }
+          $pep440SuffixMap = @{ ALPHA = 'a';     BETA = 'b';    GAMMA = 'rc'; FINAL = '' }
+          if (-not $semverLabelMap.ContainsKey($level)) {
+              throw "Unknown PY_RELEASE_LEVEL '$level' in patchlevel.h"
+          }
+
+          $semverVersion = "$major.$minor.$micro"
+          $pep440Version = "$major.$minor.$micro"
+          if ($level -ne 'FINAL') {
+              $semverVersion = "$semverVersion-$($semverLabelMap[$level]).$serial"
+              $pep440Version = "$pep440Version$($pep440SuffixMap[$level])$serial"
+          }
+
+          # Node.js-style nightly identifier:
+          #   <pep440>-nightly<YYYYMMDD><shortSHA>
+          # e.g. 3.16.0a0-nightly202607281234567890
+          $nightlyVersion = "$pep440Version-nightly$commitDateCompact$shortSha"
+          $artifactBase   = "python-$nightlyVersion-$env:MATRIX_PLATFORM-$env:MATRIX_ARCH"
+
+          @(
+              "commit_sha=$shortSha"
+              "commit_date=$commitDate"
+              "python_version=$semverVersion"
+              "nightly_version=$nightlyVersion"
+              "artifact_name=$artifactBase"
+              "cpython_source_dir=$srcDir"
+          ) | ForEach-Object { Add-Content -Path $env:GITHUB_OUTPUT -Value $_ }
+
+          Write-Host "python_version  : $semverVersion"
+          Write-Host "nightly_version : $nightlyVersion"
+          Write-Host "commit          : $shortSha ($commitDate)"
+          Write-Host "artifact_name   : $artifactBase"
+
+      - name: Build via shared production build script
+        # Reuses builders/build-python.ps1 (same entry point that stable
+        # releases use). NixPythonBuilder switches into nightly mode when
+        # CPYTHON_SOURCE_DIR / NIGHTLY_ARTIFACT_NAME are set (env-gated
+        # no-ops for the production build path).
+        env:
+          CPYTHON_SOURCE_DIR:    ${{ steps.meta.outputs.cpython_source_dir }}
+          NIGHTLY_ARTIFACT_NAME: ${{ steps.meta.outputs.artifact_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          ./builders/build-python.ps1 `
+            -Version      '${{ steps.meta.outputs.python_version }}' `
+            -Platform     '${{ matrix.platform }}' `
+            -Architecture '${{ matrix.arch }}'
 
       - name: Upload artifact
         id: upload
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ steps.build.outputs.artifact_name }}
+          name: ${{ steps.meta.outputs.artifact_name }}
           path: ${{ runner.temp }}/artifact
           if-no-files-found: error
           retention-days: 14
