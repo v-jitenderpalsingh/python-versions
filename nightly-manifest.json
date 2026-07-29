@@ -1,6 +1,27 @@
 [
   {
     "python_version": "3.16.0-alpha.0",
+    "nightly_version": "3.16.0a0-nightly202607299ccd5bb81e",
+    "commit_sha": "9ccd5bb81e",
+    "commit_date": "2026-07-29",
+    "run_id": "30430875796",
+    "run_url": "https://github.com/v-jitenderpalsingh/python-versions/actions/runs/30430875796",
+    "stable": false,
+    "files": [
+      {
+        "filename": "python-3.16.0a0-nightly202607299ccd5bb81e-linux-24.04-x64.tar.gz",
+        "arch": "x64",
+        "platform": "linux",
+        "platform_version": "24.04",
+        "download_url": "https://github.com/v-jitenderpalsingh/python-versions/actions/runs/30430875796/artifacts/8715740352",
+        "api_download_url": "https://api.github.com/repos/v-jitenderpalsingh/python-versions/actions/artifacts/8715740352/zip",
+        "artifact_id": "8715740352",
+        "artifact_format": "zip"
+      }
+    ]
+  },
+  {
+    "python_version": "3.16.0-alpha.0",
     "nightly_version": "3.16.0a0-nightly202607288b048eb35e",
     "commit_sha": "8b048eb35e",
     "commit_date": "2026-07-28",
