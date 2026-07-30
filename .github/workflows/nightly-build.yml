@@ -52,10 +52,6 @@ jobs:
           - os: ubuntu-24.04
             platform: linux-24.04
             arch: x64
-          
-          - os: ubuntu-22.04
-            platform: linux-22.04
-            arch: x64
 
     runs-on: ${{ matrix.os }}
     outputs:
