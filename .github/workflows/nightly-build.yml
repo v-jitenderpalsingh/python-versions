@@ -142,7 +142,7 @@ jobs:
           - os: ubuntu-24.04
             platform: linux-24.04
             arch: x64
-          - os: macos-15
+          - os: macos-15-intel
             platform: darwin
             arch: x64
           # macos-14 arm64 is deliberately omitted for the initial pilot:
