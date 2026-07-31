@@ -24,9 +24,9 @@ on:
 
 jobs:
   smoke-test:
-    name: Consume latest nightly on ubuntu-22.04 / x64
+    name: Consume latest nightly on ubuntu-24.04 / x64
     if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       actions: read   # required by download-artifact for cross-run access
@@ -121,9 +121,9 @@ jobs:
           if command -v python >/dev/null 2>&1; then
             echo "setup-python resolved to: $(command -v python)"
             python -VVV
+            python --version
           else
             echo "::notice::setup-python did not resolve the nightly version; direct-invocation path is the supported flow for now."
           fi
 
-          python --version
           echo "Nightly consumption test complete."
