@@ -179,7 +179,11 @@ class macOSPythonBuilder : NixPythonBuilder {
 
         $PkgVersion = [semver]"3.11.0-beta.1"
 
-        if (($this.Version -ge $PkgVersion) -or ($this.Architecture -eq "arm64")) {
+        # Nightly hook: python.org has no .pkg for a nightly (e.g. 3.16.0a0), so
+        # when the workflow supplies a pre-cloned CPython tree, always build from source.
+        if ($env:CPYTHON_SOURCE_DIR) {
+            ([NixPythonBuilder]$this).Build()
+        } elseif (($this.Version -ge $PkgVersion) -or ($this.Architecture -eq "arm64")) {
             Write-Host "Download Python $($this.Version) [$($this.Architecture)] package..."
             $this.DownloadPkg()
 
