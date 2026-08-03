@@ -55,8 +55,9 @@ class macOSPythonBuilder : NixPythonBuilder {
         ### Solution is to install these libraries from a third-party package manager,
         ### and then add the appropriate paths for the header and library files to configure command.
         ### Link to documentation (https://cpython-devguide.readthedocs.io/setup/#build-dependencies)
-        $configureString += " --with-openssl=/usr/local/opt/openssl@3"
-        $configureString += " --with-tcltk-includes='-I /usr/local/opt/tcl-tk/include/tcl-tk' --with-tcltk-libs='-L/usr/local/opt/tcl-tk/lib -ltcl8.6 -ltk8.6'"
+        ### `brew --prefix` resolves to /usr/local/opt on Intel and /opt/homebrew/opt on Apple Silicon.
+        $configureString += " --with-openssl=$(brew --prefix openssl@3)"
+        $configureString += " --with-tcltk-includes='-I $(brew --prefix tcl-tk)/include/tcl-tk' --with-tcltk-libs='-L$(brew --prefix tcl-tk)/lib -ltcl8.6 -ltk8.6'"
 
         ### Compile with support of loadable sqlite extensions.
         ### Link to documentation (https://docs.python.org/3/library/sqlite3.html#sqlite3.Connection.enable_load_extension)

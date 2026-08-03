@@ -1,7 +1,7 @@
 name: Nightly Python build (pilot)
 
 # Pilot nightly build:
-# - Builds CPython main HEAD on a matrix of runners (Linux + macOS Intel).
+# - Builds CPython main HEAD on a matrix of runners (Linux + macOS, x64 + arm64).
 # - Runs daily via cron; can also be triggered manually.
 # - Steps use strict modes (set -euo pipefail, $ErrorActionPreference=Stop).
 #   Matrix does NOT fail-fast: other cells keep running, but if any cell
@@ -140,15 +140,17 @@ jobs:
       matrix:
         include:
           - os: ubuntu-24.04
-            platform: linux-24.04
+            platform: linux
             arch: x64
+          - os: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
           - os: macos-15-intel
             platform: darwin
             arch: x64
-          # macos-14 arm64 is deliberately omitted for the initial pilot:
-          # macos-python-builder.psm1 Configure() hardcodes /usr/local brew
-          # prefixes that only exist on Intel runners. Add an arm64 cell
-          # once those prefixes are made brew-prefix-agnostic.
+          - os: macos-15
+            platform: darwin
+            arch: arm64
 
     runs-on: ${{ matrix.os }}
     env:
