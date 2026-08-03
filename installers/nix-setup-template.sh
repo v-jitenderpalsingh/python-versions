@@ -43,10 +43,6 @@ ln -s ./bin/$PYTHON_MAJOR_DOT_MINOR python
 
 cd bin/
 ln -s $PYTHON_MAJOR_DOT_MINOR $PYTHON_MAJORMINOR
-if [ ! -f $PYTHON_MAJOR ]; then
-    echo "::warning::Expected $PYTHON_MAJOR symlink was missing; recreating."
-    ln -s $PYTHON_MAJOR_DOT_MINOR $PYTHON_MAJOR
-fi
 if [ ! -f python ]; then
     ln -s $PYTHON_MAJOR_DOT_MINOR python
 fi

@@ -139,7 +139,7 @@ class NixPythonBuilder : PythonBuilder {
 
     [void] CopyBuildResults() {
         $buildFolder = $this.GetFullPythonToolcacheLocation()
-        Move-Item -Path "$buildFolder/*" -Destination $this.WorkFolderLocation
+        Execute-Command -Command "mv '$buildFolder/'* '$($this.WorkFolderLocation)/'"
     }
 
     [void] ArchiveArtifact() {
