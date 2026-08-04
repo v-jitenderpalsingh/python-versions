@@ -131,7 +131,7 @@ class NixPythonBuilder : PythonBuilder {
         Write-Debug "make Python $($this.Version)-$($this.Architecture) $($this.Platform)"
         $buildOutputLocation = New-Item -Path $this.WorkFolderLocation -Name "build_output.txt" -ItemType File
         
-        Execute-Command -Command "make 2>&1 | tee $buildOutputLocation" -ErrorAction Stop
+        Execute-Command -Command "make 2>&1 | tee $buildOutputLocation" -ErrorAction Continue
         Execute-Command -Command "make install" -ErrorAction Stop
 
         Write-Debug "Done; Make log location: $buildOutputLocation"
@@ -139,9 +139,9 @@ class NixPythonBuilder : PythonBuilder {
 
     [void] CopyBuildResults() {
         $buildFolder = $this.GetFullPythonToolcacheLocation()
-        Execute-Command -Command "mv '$buildFolder/'* '$($this.WorkFolderLocation)/'"
+        Move-Item -Path "$buildFolder/*" -Destination $this.WorkFolderLocation
     }
-
+    
     [void] ArchiveArtifact() {
         $OutputPath = Join-Path $this.ArtifactFolderLocation $this.OutputArtifactName
         Create-TarArchive -SourceFolder $this.WorkFolderLocation -ArchivePath $OutputPath
