@@ -1,18 +1,18 @@
 name: Nightly Python build (pilot)
 
 # Pilot nightly build:
-# - Builds CPython main HEAD on a matrix of runners (Linux + macOS, x64 + arm64).
+# - Builds CPython main HEAD on a matrix of Linux, macOS, and Windows runners.
 # - Runs daily via cron; can also be triggered manually.
 # - Steps use strict modes (set -euo pipefail, $ErrorActionPreference=Stop).
 #   Matrix does NOT fail-fast: other cells keep running, but if any cell
 #   fails the overall `build` job fails and the downstream manifest update
 #   is skipped (no publish that day).
-# - Distribution model: NO GitHub Releases. Each built tarball is uploaded
+# - Distribution model: NO GitHub Releases. Each built package is uploaded
 #   as a workflow artifact (retention-days: 14). The artifact URL is
 #   recorded in nightly-manifest.json as the download URL.
 #     * The URL requires the caller to be authenticated with repo read
 #       access (browser URL) or to supply a GITHUB_TOKEN (REST API URL).
-#     * The artifact is served as a .zip that wraps the .tar.gz.
+#     * The artifact is served as an outer .zip that wraps the platform package.
 #     * Manifest entries older than 14 days will point at expired artifacts;
 #       the manifest itself is append-only and is never pruned.
 #
@@ -20,7 +20,7 @@ name: Nightly Python build (pilot)
 #   resolve_source (single job) computes shared metadata from the pinned
 #       CPython commit (python_version, nightly_version, commit_sha, commit_date).
 #   build (matrix)  re-clones at that pinned SHA, builds via the shared
-#       production build script, uploads the tarball, and emits a small
+#       production build script, uploads the package, and emits a small
 #       "cell-metadata" JSON artifact describing what it produced.
 #   update_manifest downloads every cell-metadata artifact and assembles
 #       one manifest entry whose files[] contains one object per cell.
@@ -151,6 +151,12 @@ jobs:
           - os: macos-15
             platform: darwin
             arch: arm64
+          - os: windows-latest
+            platform: win32
+            arch: x64
+          - os: windows-11-arm
+            platform: win32
+            arch: arm64
 
     runs-on: ${{ matrix.os }}
     env:
@@ -210,7 +216,7 @@ jobs:
             -Platform     '${{ matrix.platform }}' `
             -Architecture '${{ matrix.arch }}'
 
-      - name: Upload tarball artifact
+      - name: Upload Python artifact
         id: upload
         uses: actions/upload-artifact@v7
         with:
@@ -241,8 +247,10 @@ jobs:
           $repo = $env:GITHUB_REPOSITORY
           $apiDownloadUrl = "https://api.github.com/repos/$repo/actions/artifacts/$($env:ARTIFACT_ID)/zip"
 
+          $packageExtension = if ($env:MATRIX_PLATFORM -eq "win32") { ".zip" } else { ".tar.gz" }
+
           $file = [ordered]@{
-            filename         = "$($env:ARTIFACT_NAME).tar.gz"
+            filename         = "$($env:ARTIFACT_NAME)$packageExtension"
             arch             = $env:MATRIX_ARCH
             platform         = $platformName
             platform_version = $platformVersion

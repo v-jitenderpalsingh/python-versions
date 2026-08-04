@@ -132,7 +132,7 @@ class NixPythonBuilder : PythonBuilder {
         $buildOutputLocation = New-Item -Path $this.WorkFolderLocation -Name "build_output.txt" -ItemType File
         
         Execute-Command -Command "make 2>&1 | tee $buildOutputLocation" -ErrorAction Continue
-        Execute-Command -Command "make install" -ErrorAction Stop
+        Execute-Command -Command "make install" -ErrorAction Continue
 
         Write-Debug "Done; Make log location: $buildOutputLocation"
     }

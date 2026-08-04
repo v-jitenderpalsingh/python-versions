@@ -33,7 +33,11 @@ class WinPythonBuilder : PythonBuilder {
     ) : Base($version, $architecture, $platform) {
         $this.InstallationTemplateName = "win-setup-template.ps1"
         $this.InstallationScriptName = "setup.ps1"
-        $this.OutputArtifactName = "python-$Version-$Platform-$Architecture.zip"
+        if ($env:NIGHTLY_ARTIFACT_NAME) {
+            $this.OutputArtifactName = "$env:NIGHTLY_ARTIFACT_NAME.zip"
+        } else {
+            $this.OutputArtifactName = "python-$Version-$Platform-$Architecture.zip"
+        }
     }
 
     [string] GetPythonExtension() {
@@ -117,6 +121,84 @@ class WinPythonBuilder : PythonBuilder {
         Write-Debug "Done; Installation script location: $installationScriptLocation)"
     }
 
+    [void] CreateNightlyInstallationScript() {
+        $installationTemplateLocation = Join-Path -Path $this.InstallationTemplatesLocation -ChildPath "win-portable-setup-template.ps1"
+        $installationTemplateContent = Get-Content -Path $installationTemplateLocation -Raw
+        $installationScriptLocation = Join-Path -Path $this.WorkFolderLocation -ChildPath $this.InstallationScriptName
+
+        $variablesToReplace = @{
+            "{{__ARCHITECTURE__}}" = $this.Architecture;
+            "{{__VERSION__}}" = $this.Version;
+        }
+
+        $variablesToReplace.keys | ForEach-Object { $installationTemplateContent = $installationTemplateContent.Replace($_, $variablesToReplace[$_]) }
+        $installationTemplateContent | Out-File -FilePath $installationScriptLocation
+    }
+
+    [void] BuildNightly() {
+        if (-not (Test-Path $env:CPYTHON_SOURCE_DIR)) {
+            throw "CPYTHON_SOURCE_DIR does not exist: $env:CPYTHON_SOURCE_DIR"
+        }
+
+        $hardwareArchitecture = $this.GetHardwareArchitecture()
+        $buildArchitecture = switch ($hardwareArchitecture) {
+            "x64" { "x64" }
+            "arm64" { "ARM64" }
+            default { throw "Unsupported Windows architecture: $hardwareArchitecture" }
+        }
+        $layoutArchitecture = switch ($hardwareArchitecture) {
+            "x64" { "amd64" }
+            "arm64" { "arm64" }
+        }
+        $buildFolderName = switch ($hardwareArchitecture) {
+            "x64" { "amd64" }
+            "arm64" { "arm64" }
+        }
+        if ($this.IsFreeThreaded()) {
+            $buildFolderName += "t"
+        }
+
+        $buildScript = Join-Path $env:CPYTHON_SOURCE_DIR "PCbuild/build.bat"
+        $buildArguments = @("-p", $buildArchitecture, "-c", "Release")
+        if ($this.IsFreeThreaded()) {
+            $buildArguments += "--disable-gil"
+        }
+
+        Write-Host "Build nightly Python $($this.Version) [$($this.Architecture)] from source..."
+        & $buildScript @buildArguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "CPython PCbuild failed with exit code $LASTEXITCODE"
+        }
+
+        $layoutScript = Join-Path $env:CPYTHON_SOURCE_DIR "PC/layout"
+        $buildFolder = Join-Path $env:CPYTHON_SOURCE_DIR "PCbuild/$buildFolderName"
+        $layoutArguments = @(
+            $layoutScript,
+            "--source", $env:CPYTHON_SOURCE_DIR,
+            "--build", $buildFolder,
+            "--arch", $layoutArchitecture,
+            "--copy", $this.WorkFolderLocation,
+            "--include-stable",
+            "--include-tcltk",
+            "--include-venv",
+            "--include-dev",
+            "--include-alias",
+            "--include-alias3"
+        )
+        if ($this.IsFreeThreaded()) {
+            $layoutArguments += "--include-freethreaded"
+        }
+
+        Write-Host "Create portable Windows layout..."
+        & python @layoutArguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "CPython PC/layout failed with exit code $LASTEXITCODE"
+        }
+
+        $this.CreateNightlyInstallationScript()
+        $this.ArchiveArtifact()
+    }
+
     [void] ArchiveArtifact() {
         $OutputPath = Join-Path $this.ArtifactFolderLocation $this.OutputArtifactName
         Create-SevenZipArchive -SourceFolder $this.WorkFolderLocation -ArchivePath $OutputPath
@@ -127,6 +209,11 @@ class WinPythonBuilder : PythonBuilder {
         .SYNOPSIS
         Generates Python artifact from downloaded Python installation executable.
         #>
+
+        if ($env:CPYTHON_SOURCE_DIR) {
+            $this.BuildNightly()
+            return
+        }
 
         Write-Host "Download Python $($this.Version) [$($this.Architecture)] executable..."
         $this.Download()
