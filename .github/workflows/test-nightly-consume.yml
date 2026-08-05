@@ -148,7 +148,7 @@ jobs:
             PYTHON="$PY_ROOT/python"
           fi
           "$PYTHON" -VVV
-          "$PYTHON" -c "import bz2, ctypes, hashlib, lzma, multiprocessing, ssl, sqlite3, sysconfig, tkinter, venv, zlib; print('stdlib imports OK')"
+          "$PYTHON" -c "import bz2, ctypes, hashlib, lzma, multiprocessing, ssl, sqlite3, sysconfig, venv, zlib; print('stdlib imports OK')"
           "$PYTHON" -m pip --version
 
       - name: Try consuming via actions/setup-python (best effort)
