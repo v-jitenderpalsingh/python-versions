@@ -1,6 +1,77 @@
 [
   {
     "python_version": "3.16.0-alpha.0",
+    "nightly_version": "3.16.0a0-nightly20260805ca4518b7f7",
+    "commit_sha": "ca4518b7f7",
+    "commit_date": "2026-08-05",
+    "run_id": "30976222638",
+    "run_url": "https://github.com/v-jitenderpalsingh/python-versions/actions/runs/30976222638",
+    "stable": false,
+    "files": [
+      {
+        "filename": "python-3.16.0a0-nightly20260805ca4518b7f7-darwin-arm64.tar.gz",
+        "arch": "arm64",
+        "platform": "darwin",
+        "platform_version": "",
+        "download_url": "https://github.com/v-jitenderpalsingh/python-versions/actions/runs/30976222638/artifacts/8918534151",
+        "api_download_url": "https://api.github.com/repos/v-jitenderpalsingh/python-versions/actions/artifacts/8918534151/zip",
+        "artifact_id": "8918534151",
+        "artifact_format": "zip"
+      },
+      {
+        "filename": "python-3.16.0a0-nightly20260805ca4518b7f7-darwin-x64.tar.gz",
+        "arch": "x64",
+        "platform": "darwin",
+        "platform_version": "",
+        "download_url": "https://github.com/v-jitenderpalsingh/python-versions/actions/runs/30976222638/artifacts/8918730015",
+        "api_download_url": "https://api.github.com/repos/v-jitenderpalsingh/python-versions/actions/artifacts/8918730015/zip",
+        "artifact_id": "8918730015",
+        "artifact_format": "zip"
+      },
+      {
+        "filename": "python-3.16.0a0-nightly20260805ca4518b7f7-linux-arm64.tar.gz",
+        "arch": "arm64",
+        "platform": "linux",
+        "platform_version": "",
+        "download_url": "https://github.com/v-jitenderpalsingh/python-versions/actions/runs/30976222638/artifacts/8918589683",
+        "api_download_url": "https://api.github.com/repos/v-jitenderpalsingh/python-versions/actions/artifacts/8918589683/zip",
+        "artifact_id": "8918589683",
+        "artifact_format": "zip"
+      },
+      {
+        "filename": "python-3.16.0a0-nightly20260805ca4518b7f7-linux-x64.tar.gz",
+        "arch": "x64",
+        "platform": "linux",
+        "platform_version": "",
+        "download_url": "https://github.com/v-jitenderpalsingh/python-versions/actions/runs/30976222638/artifacts/8918522657",
+        "api_download_url": "https://api.github.com/repos/v-jitenderpalsingh/python-versions/actions/artifacts/8918522657/zip",
+        "artifact_id": "8918522657",
+        "artifact_format": "zip"
+      },
+      {
+        "filename": "python-3.16.0a0-nightly20260805ca4518b7f7-win32-arm64.zip",
+        "arch": "arm64",
+        "platform": "win32",
+        "platform_version": "",
+        "download_url": "https://github.com/v-jitenderpalsingh/python-versions/actions/runs/30976222638/artifacts/8918482714",
+        "api_download_url": "https://api.github.com/repos/v-jitenderpalsingh/python-versions/actions/artifacts/8918482714/zip",
+        "artifact_id": "8918482714",
+        "artifact_format": "zip"
+      },
+      {
+        "filename": "python-3.16.0a0-nightly20260805ca4518b7f7-win32-x64.zip",
+        "arch": "x64",
+        "platform": "win32",
+        "platform_version": "",
+        "download_url": "https://github.com/v-jitenderpalsingh/python-versions/actions/runs/30976222638/artifacts/8918446813",
+        "api_download_url": "https://api.github.com/repos/v-jitenderpalsingh/python-versions/actions/artifacts/8918446813/zip",
+        "artifact_id": "8918446813",
+        "artifact_format": "zip"
+      }
+    ]
+  },
+  {
+    "python_version": "3.16.0-alpha.0",
     "nightly_version": "3.16.0a0-nightly20260804679ff3af83",
     "commit_sha": "679ff3af83",
     "commit_date": "2026-08-04",
