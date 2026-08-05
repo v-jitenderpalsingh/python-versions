@@ -190,6 +190,7 @@ class WinPythonBuilder : PythonBuilder {
         }
 
         Write-Host "Create portable Windows layout..."
+        $env:PYTHONINCLUDE = Join-Path $env:CPYTHON_SOURCE_DIR "Include"
         & python @layoutArguments
         if ($LASTEXITCODE -ne 0) {
             throw "CPython PC/layout failed with exit code $LASTEXITCODE"
