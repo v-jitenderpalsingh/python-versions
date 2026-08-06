@@ -141,7 +141,7 @@ class NixPythonBuilder : PythonBuilder {
         $buildFolder = $this.GetFullPythonToolcacheLocation()
         Move-Item -Path "$buildFolder/*" -Destination $this.WorkFolderLocation
     }
-
+    
     [void] ArchiveArtifact() {
         $OutputPath = Join-Path $this.ArtifactFolderLocation $this.OutputArtifactName
         Create-TarArchive -SourceFolder $this.WorkFolderLocation -ArchivePath $OutputPath
