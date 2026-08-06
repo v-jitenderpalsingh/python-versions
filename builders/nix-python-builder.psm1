@@ -39,7 +39,15 @@ class NixPythonBuilder : PythonBuilder {
     ) : Base($version, $architecture, $platform) {
         $this.InstallationTemplateName = "nix-setup-template.sh"	
         $this.InstallationScriptName = "setup.sh"
-        $this.OutputArtifactName = "python-$Version-$Platform-$Architecture.tar.gz"
+
+        # Nightly hook: if the workflow computed a custom artifact base name
+        # (e.g. from `git describe`), honor it. No-op when the env var isn't
+        # set, so the standard release-quality build path is unaffected.
+        if ($env:NIGHTLY_ARTIFACT_NAME) {
+            $this.OutputArtifactName = "$env:NIGHTLY_ARTIFACT_NAME.tar.gz"
+        } else {
+            $this.OutputArtifactName = "python-$Version-$Platform-$Architecture.tar.gz"
+        }
     }
 
     [uri] GetSourceUri() {
@@ -69,6 +77,15 @@ class NixPythonBuilder : PythonBuilder {
         .SYNOPSIS
         Download Python sources and extract them at temporary work folder. Returns expanded archive location path.
         #>
+
+        # Nightly hook: if the workflow already cloned a CPython source tree
+        # (e.g. from github.com/python/cpython at HEAD), use it directly and
+        # skip the versioned tarball download from python.org. No-op when the
+        # env var isn't set.
+        if ($env:CPYTHON_SOURCE_DIR -and (Test-Path $env:CPYTHON_SOURCE_DIR)) {
+            Write-Host "Using pre-cloned CPython source: $env:CPYTHON_SOURCE_DIR"
+            return $env:CPYTHON_SOURCE_DIR
+        }
 
         $sourceUri = $this.GetSourceUri()
         Write-Host "Sources URI: $sourceUri"
@@ -124,7 +141,7 @@ class NixPythonBuilder : PythonBuilder {
         $buildFolder = $this.GetFullPythonToolcacheLocation()
         Move-Item -Path "$buildFolder/*" -Destination $this.WorkFolderLocation
     }
-
+    
     [void] ArchiveArtifact() {
         $OutputPath = Join-Path $this.ArtifactFolderLocation $this.OutputArtifactName
         Create-TarArchive -SourceFolder $this.WorkFolderLocation -ArchivePath $OutputPath

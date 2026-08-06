@@ -1,0 +1,359 @@
+name: Nightly Python build (pilot)
+
+# Pilot nightly build:
+# - Builds CPython main HEAD on a matrix of Linux, macOS, and Windows runners.
+# - Runs daily via cron; can also be triggered manually.
+# - Steps use strict modes (set -euo pipefail, $ErrorActionPreference=Stop).
+#   Matrix does NOT fail-fast: other cells keep running, but if any cell
+#   fails the overall `build` job fails and the downstream manifest update
+#   is skipped (no publish that day).
+# - Distribution model: NO GitHub Releases. Each built package is uploaded
+#   as a workflow artifact (retention-days: 14). The artifact URL is
+#   recorded in nightly-manifest.json as the download URL.
+#     * The URL requires the caller to be authenticated with repo read
+#       access (browser URL) or to supply a GITHUB_TOKEN (REST API URL).
+#     * The artifact is served as an outer .zip that wraps the platform package.
+#     * Manifest entries older than 14 days will point at expired artifacts;
+#       the manifest itself is append-only and is never pruned.
+#
+# Architecture (fan-out):
+#   resolve_source (single job) computes shared metadata from the pinned
+#       CPython commit (python_version, nightly_version, commit_sha, commit_date).
+#   build (matrix)  re-clones at that pinned SHA, builds via the shared
+#       production build script, uploads the package, and emits a small
+#       "cell-metadata" JSON artifact describing what it produced.
+#   update_manifest downloads every cell-metadata artifact and assembles
+#       one manifest entry whose files[] contains one object per cell.
+
+on:
+  schedule:
+    # 22:20 UTC every day. Adjust as needed.
+    - cron: '20 22 * * *'
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'CPython git ref to build (branch, tag, or SHA)'
+        default: 'main'
+        required: true
+
+# Prevent overlapping nightlies from stepping on each other's manifest commits.
+concurrency:
+  group: nightly-python-build
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: pwsh
+
+permissions:
+  contents: write
+
+jobs:
+  resolve_source:
+    name: Resolve CPython source metadata
+    runs-on: ubuntu-latest
+    outputs:
+      python_version:  ${{ steps.meta.outputs.python_version }}
+      nightly_version: ${{ steps.meta.outputs.nightly_version }}
+      commit_sha:      ${{ steps.meta.outputs.commit_sha }}
+      commit_date:     ${{ steps.meta.outputs.commit_date }}
+    steps:
+      - name: Clone CPython and compute nightly metadata
+        # Handles everything nightly-specific up front:
+        # - Blobless clone of the requested ref (fast, but tags available)
+        # - Parse Include/patchlevel.h -> semver + PEP 440 Python versions
+        # - Compute commit sha (10 chars) + compact YYYYMMDD commit date
+        # - Compose Node.js-style nightly version:
+        #     <pep440>-nightly<YYYYMMDD><shortSHA>
+        #   e.g. 3.16.0a0-nightly202607281234567890
+        id: meta
+        env:
+          SOURCE_REF: ${{ inputs.source_ref || 'main' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          $srcDir = Join-Path $env:RUNNER_TEMP "cpython"
+          if (Test-Path $srcDir) { Remove-Item -Recurse -Force $srcDir }
+
+          git clone --filter=blob:none --branch $env:SOURCE_REF `
+              https://github.com/python/cpython.git $srcDir
+
+          Push-Location $srcDir
+          try {
+              $shortSha   = (git rev-parse --short=10 HEAD).Trim()
+              $commitDate = (git show -s --format=%cs HEAD).Trim()   # YYYY-MM-DD
+          } finally {
+              Pop-Location
+          }
+          $commitDateCompact = $commitDate -replace '-', ''          # YYYYMMDD
+
+          # Parse patchlevel.h -> two forms of the base Python version:
+          # - semver  ("3.16.0-alpha.0") feeds build-python.ps1's [semver] param
+          #   and Convert-Label (alpha|beta|rc).
+          # - PEP 440 ("3.16.0a0") is what Python itself reports; used inside
+          #   the Node.js-style nightly identifier.
+          $patchLevel = Get-Content (Join-Path $srcDir "Include/patchlevel.h") -Raw
+          $major  = [regex]::Match($patchLevel, '#define\s+PY_MAJOR_VERSION\s+(\d+)').Groups[1].Value
+          $minor  = [regex]::Match($patchLevel, '#define\s+PY_MINOR_VERSION\s+(\d+)').Groups[1].Value
+          $micro  = [regex]::Match($patchLevel, '#define\s+PY_MICRO_VERSION\s+(\d+)').Groups[1].Value
+          $level  = [regex]::Match($patchLevel, '#define\s+PY_RELEASE_LEVEL\s+PY_RELEASE_LEVEL_(\w+)').Groups[1].Value
+          $serial = [regex]::Match($patchLevel, '#define\s+PY_RELEASE_SERIAL\s+(\d+)').Groups[1].Value
+
+          $semverLabelMap  = @{ ALPHA = 'alpha'; BETA = 'beta'; GAMMA = 'rc'; FINAL = '' }
+          $pep440SuffixMap = @{ ALPHA = 'a';     BETA = 'b';    GAMMA = 'rc'; FINAL = '' }
+          if (-not $semverLabelMap.ContainsKey($level)) {
+              throw "Unknown PY_RELEASE_LEVEL '$level' in patchlevel.h"
+          }
+
+          $semverVersion = "$major.$minor.$micro"
+          $pep440Version = "$major.$minor.$micro"
+          if ($level -ne 'FINAL') {
+              $semverVersion = "$semverVersion-$($semverLabelMap[$level]).$serial"
+              $pep440Version = "$pep440Version$($pep440SuffixMap[$level])$serial"
+          }
+
+          # Node.js-style nightly identifier:
+          #   <pep440>-nightly<YYYYMMDD><shortSHA>
+          # e.g. 3.16.0a0-nightly202607281234567890
+          $nightlyVersion = "$pep440Version-nightly$commitDateCompact$shortSha"
+
+          @(
+              "commit_sha=$shortSha"
+              "commit_date=$commitDate"
+              "python_version=$semverVersion"
+              "nightly_version=$nightlyVersion"
+          ) | ForEach-Object { Add-Content -Path $env:GITHUB_OUTPUT -Value $_ }
+
+          Write-Host "python_version  : $semverVersion"
+          Write-Host "nightly_version : $nightlyVersion"
+          Write-Host "commit          : $shortSha ($commitDate)"
+
+  build:
+    name: Build nightly Python (${{ matrix.platform }} / ${{ matrix.arch }})
+    needs: resolve_source
+    strategy:
+      # Don't cancel sibling matrix cells if one fails. When any cell fails,
+      # the overall job status still becomes failure, which prevents the
+      # downstream `update_manifest` job from running that day.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+            arch: x64
+          - os: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+          - os: macos-15-intel
+            platform: darwin
+            arch: x64
+          - os: macos-15
+            platform: darwin
+            arch: arm64
+          - os: windows-latest
+            platform: win32
+            arch: x64
+          - os: windows-11-arm
+            platform: win32
+            arch: arm64
+
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHON_VERSION:  ${{ needs.resolve_source.outputs.python_version }}
+      NIGHTLY_VERSION: ${{ needs.resolve_source.outputs.nightly_version }}
+      COMMIT_SHA:      ${{ needs.resolve_source.outputs.commit_sha }}
+      COMMIT_DATE:     ${{ needs.resolve_source.outputs.commit_date }}
+      ARTIFACT_NAME:   python-${{ needs.resolve_source.outputs.nightly_version }}-${{ matrix.platform }}-${{ matrix.arch }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Install macOS build prerequisites
+        if: matrix.platform == 'darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install openssl@3 tcl-tk sqlite3 xz gdbm mpdecimal
+
+      - name: Clone CPython at pinned commit
+        # Re-clone in each cell (rather than shipping the tree between jobs)
+        # and hard-pin to the SHA that resolve_source recorded so every cell
+        # builds the exact same tree behind the shared nightly_version.
+        shell: bash
+        env:
+          SOURCE_REF: ${{ inputs.source_ref || 'main' }}
+        run: |
+          set -euo pipefail
+          srcDir="${RUNNER_TEMP}/cpython"
+          rm -rf "$srcDir"
+          git clone --filter=blob:none https://github.com/python/cpython.git "$srcDir"
+          cd "$srcDir"
+          git fetch --depth 1 origin "$SOURCE_REF"
+          git checkout --detach FETCH_HEAD
+          got=$(git rev-parse --short=10 HEAD)
+          if [ "$got" != "$COMMIT_SHA" ]; then
+            echo "::error::CPython HEAD ($got) does not match resolved commit_sha ($COMMIT_SHA)"
+            exit 1
+          fi
+
+      - name: Build via shared production build script
+        # Reuses builders/build-python.ps1 (same entry point that stable
+        # releases use). NixPythonBuilder switches into nightly mode when
+        # CPYTHON_SOURCE_DIR / NIGHTLY_ARTIFACT_NAME are set (env-gated
+        # no-ops for the production build path). macOSPythonBuilder also
+        # observes CPYTHON_SOURCE_DIR to skip its python.org .pkg path.
+        env:
+          CPYTHON_SOURCE_DIR:    ${{ runner.temp }}/cpython
+          NIGHTLY_ARTIFACT_NAME: ${{ env.ARTIFACT_NAME }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          ./builders/build-python.ps1 `
+            -Version      '${{ needs.resolve_source.outputs.python_version }}' `
+            -Platform     '${{ matrix.platform }}' `
+            -Architecture '${{ matrix.arch }}'
+
+      - name: Upload Python artifact
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ runner.temp }}/artifact
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Emit per-cell metadata
+        # Written to a separate small artifact so the update_manifest job
+        # can aggregate one manifest entry across all matrix cells without
+        # depending on GitHub Actions per-cell job outputs (which don't exist).
+        shell: pwsh
+        env:
+          ARTIFACT_ID:     ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_URL:    ${{ steps.upload.outputs.artifact-url }}
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+          MATRIX_ARCH:     ${{ matrix.arch }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # platform="linux-24.04" -> platform_name="linux", platform_version="24.04"
+          # platform="darwin"      -> platform_name="darwin", platform_version=""
+          $parts = $env:MATRIX_PLATFORM.Split('-', 2)
+          $platformName    = $parts[0]
+          $platformVersion = if ($parts.Length -gt 1) { $parts[1] } else { "" }
+
+          $repo = $env:GITHUB_REPOSITORY
+          $apiDownloadUrl = "https://api.github.com/repos/$repo/actions/artifacts/$($env:ARTIFACT_ID)/zip"
+
+          $packageExtension = if ($env:MATRIX_PLATFORM -eq "win32") { ".zip" } else { ".tar.gz" }
+
+          $file = [ordered]@{
+            filename         = "$($env:ARTIFACT_NAME)$packageExtension"
+            arch             = $env:MATRIX_ARCH
+            platform         = $platformName
+            platform_version = $platformVersion
+            download_url     = $env:ARTIFACT_URL
+            api_download_url = $apiDownloadUrl
+            artifact_id      = $env:ARTIFACT_ID
+            artifact_format  = "zip"
+          }
+
+          $metaDir = Join-Path $env:RUNNER_TEMP "cell-meta"
+          New-Item -ItemType Directory -Force -Path $metaDir | Out-Null
+          $metaPath = Join-Path $metaDir "file.json"
+          $file | ConvertTo-Json -Depth 6 | Set-Content -Path $metaPath -Encoding utf8
+
+      - name: Upload per-cell metadata artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: cell-metadata-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/cell-meta
+          if-no-files-found: error
+          retention-days: 14
+
+  update_manifest:
+    name: Update nightly manifest
+    needs: [resolve_source, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Download all cell metadata
+        uses: actions/download-artifact@v8
+        with:
+          pattern: cell-metadata-*
+          path: ./_cell-meta
+          # Each cell drops its own file at cell-metadata-<platform>-<arch>/file.json.
+
+      - name: Update nightly-manifest.json
+        shell: pwsh
+        env:
+          PYTHON_VERSION:  ${{ needs.resolve_source.outputs.python_version }}
+          NIGHTLY_VERSION: ${{ needs.resolve_source.outputs.nightly_version }}
+          COMMIT_SHA:      ${{ needs.resolve_source.outputs.commit_sha }}
+          COMMIT_DATE:     ${{ needs.resolve_source.outputs.commit_date }}
+          RUN_ID:          ${{ github.run_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $manifestPath = "nightly-manifest.json"
+          if (-not (Test-Path $manifestPath)) { '[]' | Set-Content $manifestPath }
+
+          $raw = Get-Content $manifestPath -Raw
+          $manifest = if ([string]::IsNullOrWhiteSpace($raw)) { @() } else { @($raw | ConvertFrom-Json) }
+
+          # Manifest is append-only: existing entries are never removed or
+          # rewritten. Skip if we already recorded this commit.
+          if ($manifest | Where-Object { $_.commit_sha -eq $env:COMMIT_SHA }) {
+            Write-Host "::notice::Manifest already has an entry for commit $env:COMMIT_SHA; skipping."
+            exit 0
+          }
+
+          $files = @()
+          foreach ($dir in Get-ChildItem -Path './_cell-meta' -Directory) {
+            $metaPath = Join-Path $dir.FullName "file.json"
+            if (-not (Test-Path $metaPath)) {
+              Write-Host "::warning::Missing file.json in $($dir.Name); skipping."
+              continue
+            }
+            $files += (Get-Content $metaPath -Raw | ConvertFrom-Json)
+          }
+
+          if ($files.Count -eq 0) {
+            Write-Host "::error::No cell metadata found; refusing to publish an empty entry."
+            exit 1
+          }
+
+          $repo = $env:GITHUB_REPOSITORY
+          $entry = [ordered]@{
+            python_version  = $env:PYTHON_VERSION
+            nightly_version = $env:NIGHTLY_VERSION
+            commit_sha      = $env:COMMIT_SHA
+            commit_date     = $env:COMMIT_DATE
+            run_id          = $env:RUN_ID
+            run_url         = "https://github.com/$repo/actions/runs/$($env:RUN_ID)"
+            stable          = $false
+            files           = @($files)
+          }
+
+          $updated = @($entry) + $manifest
+          $updated | ConvertTo-Json -Depth 6 -AsArray | Set-Content -Path $manifestPath
+
+      - name: Commit manifest update
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- nightly-manifest.json; then
+            echo "No manifest changes to commit."
+            exit 0
+          fi
+          git config user.name  "nightly-bot"
+          git config user.email "nightly-bot@example.invalid"
+          git add nightly-manifest.json
+          git commit -m "chore(nightly): add ${{ needs.resolve_source.outputs.nightly_version }}"
+          git push origin HEAD:${{ github.ref_name }}
